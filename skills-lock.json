@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "design-taste-frontend": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/taste-skill/SKILL.md",
+      "computedHash": "6ac8ba6089dcbc303744a507a4587113c5d845ca2f658b3ce2b0b5eab108fb0d"
+    },
+    "fastify-best-practise": {
+      "source": "TheCodePace/fastify-skills",
+      "sourceType": "github",
+      "skillPath": "skills/fastify-best-practise/SKILL.md",
+      "computedHash": "68258839d8ad9ff447c29d1351b23c613638983d51b8a5678677fb4105fc6df2"
+    }
+  }
+}
