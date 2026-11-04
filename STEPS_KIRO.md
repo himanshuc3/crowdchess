@@ -96,3 +96,59 @@ This document tracks all steps taken during implementation, CLI commands execute
 - Type inference with `z.infer<typeof Schema>` ensures TypeScript types and Zod schemas never drift
 - Vitest works out of the box with TypeScript ESM imports — no special config needed for `.js` extension resolution
 - `SessionSettingsSchema` is defined in `models/index.ts` (not `enums.ts`) because it's a composite object schema, not a simple enum
+
+
+---
+
+## Task 3: Database Package (Prisma)
+
+### Steps Taken
+1. Updated `packages/database/package.json` to add `prisma` (^6.0.0) as devDependency and `@prisma/client` (^6.0.0) as dependency, `vitest` (^3.0.0) as devDependency. Updated `db:generate` script to `prisma generate` and `db:migrate` to `prisma migrate dev --name init`. Updated `test` script to `vitest run`.
+2. Created `packages/database/prisma/schema.prisma` with all 11 models from the design document:
+   - User, YoutubeConnection, LichessBotConnection (with unique constraints per user+channel and user+bot)
+   - Session (with settingsJson, mode, status, endedAt), Game (with platformGameId, currentFen, botColor)
+   - Round (with unique [gameId, ply] for one round per ply), ChatEvent (unique platformMessageId for dedup)
+   - MoveCandidate (unique [roundId, viewerId, canonicalUci] for dedup), Vote (unique [roundId, viewerId] for one vote per viewer)
+   - Score (composite primary key [sessionId, viewerId]), GameEvent (audit log with index on gameId)
+3. Configured Prisma generator output to `../src/generated` (excluded from git via .gitignore)
+4. Created `packages/database/src/client.ts` — singleton PrismaClient with dev-mode global caching pattern
+5. Updated `packages/database/src/index.ts` — exports prisma client instance, PrismaClient class, and all model types
+6. Updated `packages/database/tsconfig.json` — excluded `src/generated/**` from TypeScript compilation
+7. Updated `pnpm-workspace.yaml` — added `@prisma/client`, `@prisma/engines`, `prisma` to `onlyBuiltDependencies`
+8. Started PostgreSQL 16 container via Docker for migration and testing
+9. Ran `prisma generate` — generated Prisma client v6.19.3 with Node-API engine for debian-openssl-3.0.x
+10. Ran `prisma migrate dev --name init` — created migration `20261104050838_init` with all tables and constraints
+11. Created `packages/database/src/__tests__/database.test.ts` — 13 integration tests
+
+### CLI Commands Executed
+- `pnpm install` — Installed prisma, @prisma/client, and vitest
+- `docker run -d --name crowdchess-pg -p 5432:5432 -e POSTGRES_USER=crowdchess -e POSTGRES_PASSWORD=crowdchess -e POSTGRES_DB=crowdchess postgres:16-alpine` — Started PostgreSQL container
+- `packages/database/node_modules/.bin/prisma generate --schema=packages/database/prisma/schema.prisma` — Generated Prisma client
+- `DATABASE_URL="postgresql://crowdchess:crowdchess@localhost:5432/crowdchess" packages/database/node_modules/.bin/prisma migrate dev --name init --schema=packages/database/prisma/schema.prisma` — Created and applied initial migration
+- `DATABASE_URL="postgresql://crowdchess:crowdchess@localhost:5432/crowdchess" pnpm --filter @crowdchess/database test` — Ran database tests (13 passed)
+- `pnpm build` — Full monorepo build (10/10 successful)
+
+### What Was Verified
+- Prisma schema compiles without errors (11 models, 5 unique constraints, 3 indexes)
+- Migration applies cleanly to fresh PostgreSQL 16 database
+- Prisma client generates to `src/generated/` and TypeScript types resolve correctly
+- `pnpm --filter @crowdchess/database build` — TypeScript compiles with Prisma imports
+- `pnpm --filter @crowdchess/database test` — 13 integration tests pass:
+  - User CRUD (create, read, update, delete)
+  - Full session → game → round chain creation
+  - Unique [gameId, ply] constraint (prevents duplicate rounds)
+  - MoveCandidate creation and unique [roundId, viewerId, canonicalUci] deduplication
+  - Vote unique [roundId, viewerId] constraint (one vote per viewer per round)
+  - Vote change via update (overwrite pattern)
+  - Score composite key [sessionId, viewerId] create and update
+  - ChatEvent unique platformMessageId deduplication
+  - ChatEvent allows null roundId for messages outside active rounds
+- `pnpm build` — Full monorepo builds (10/10), confirming database package integration
+
+### Learnings
+- pnpm v12's `onlyBuiltDependencies` in `pnpm-workspace.yaml` doesn't suppress the `ERR_PNPM_IGNORED_BUILDS` exit code for Prisma packages, but the binaries still install correctly and the CLI works
+- Prisma v6.19.3 generates CommonJS client code (`Object.defineProperty(exports, ...)`) — importing from ESM works because the generated directory has its own `package.json` without `"type": "module"`, so Node.js treats the files as CommonJS and does interop automatically
+- The generated client exports `PrismaClient` via `exports.PrismaClient = PrismaClient` in `index.js`, which Node.js cjs-module-lexer can detect for named ESM imports
+- Prisma's `db:migrate` needs a running PostgreSQL instance — started a temporary Docker container for this task (will be formalized in Task 5's docker-compose)
+- The `@@unique` constraint in Prisma maps to a SQL UNIQUE constraint, which causes `prisma.create` to throw on duplicates — used in tests with `.rejects.toThrow()`
+- Prisma composite primary keys use `@@id([field1, field2])` syntax, and lookups use the compound key name like `sessionId_viewerId`

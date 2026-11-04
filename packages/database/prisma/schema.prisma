@@ -1,0 +1,204 @@
+// CrowdChess Prisma Schema
+// Based on the data model from the CrowdChess Product & Technical Design v1
+// All IDs use UUID; timestamps use DateTime with default now()
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User: CrowdChess user identity for streamer accounts ───
+
+model User {
+  id          String   @id @default(uuid())
+  displayName String
+  createdAt   DateTime @default(now())
+
+  youtubeConnections     YoutubeConnection[]
+  lichessBotConnections  LichessBotConnection[]
+  sessions               Session[]
+}
+
+// ─── YouTube Connection: OAuth connection per user ───
+
+model YoutubeConnection {
+  id                     String   @id @default(uuid())
+  userId                 String
+  channelId              String
+  encryptedRefreshToken  String
+  scopes                 String[]
+  status                 String   @default("ACTIVE") // ACTIVE | DISCONNECTED | REVOKED
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channelId])
+}
+
+// ─── Lichess Bot Connection: Reference to bot account credential ───
+
+model LichessBotConnection {
+  id                 String   @id @default(uuid())
+  ownerUserId        String
+  botUsername        String
+  encryptedTokenRef  String
+  status             String   @default("ACTIVE") // ACTIVE | DISCONNECTED | REVOKED
+  createdAt          DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  ownerUser User @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerUserId, botUsername])
+}
+
+// ─── Session: A streamer's CrowdChess session ───
+
+model Session {
+  id                  String    @id @default(uuid())
+  streamerUserId      String
+  youtubeBroadcastId  String?
+  mode                String    // DEMOCRACY | BATTLE_ROYALE | CHAOS
+  status              String    @default("DRAFT") // SessionStatus enum
+  settingsJson        Json?
+  createdAt           DateTime  @default(now())
+  endedAt             DateTime?
+
+  streamerUser User    @relation(fields: [streamerUserId], references: [id], onDelete: Cascade)
+  games                Game[]
+  scores               Score[]
+}
+
+// ─── Game: External game reference and synchronized state ───
+
+model Game {
+  id                    String    @id @default(uuid())
+  sessionId             String
+  platform              String    @default("lichess")
+  platformGameId        String?
+  botColor              String    @default("black") // white | black
+  currentFen            String    @default("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+  status                String    @default("ACTIVE") // ACTIVE | COMPLETED | ABORTED
+  lastPlatformEventAt   DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  session     Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  rounds       Round[]
+  gameEvents   GameEvent[]
+}
+
+// ─── Round: One audience decision window for one bot turn ───
+
+model Round {
+  id            String    @id @default(uuid())
+  gameId        String
+  ply           Int
+  mode          String    // DEMOCRACY | BATTLE_ROYALE | CHAOS
+  status        String    @default("PENDING") // RoundStatus enum
+  opensAt       DateTime
+  closesAt      DateTime?
+  selectedMove  String?
+  resultJson    Json?
+  createdAt     DateTime  @default(now())
+
+  game            Game            @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  chatEvents      ChatEvent[]
+  moveCandidates  MoveCandidate[]
+  votes           Vote[]
+
+  // Only one active round per game at a time (status guard enforced in app logic)
+  @@unique([gameId, ply])
+}
+
+// ─── ChatEvent: Deduplicated normalized chat event audit ───
+
+model ChatEvent {
+  id                String   @id @default(uuid())
+  platformMessageId String
+  roundId           String?
+  viewerPlatformId  String
+  viewerDisplayName String   @default("")
+  rawText           String
+  parsedType        String   // MOVE_SUBMISSION | VOTE | OTHER
+  receivedAt        DateTime @default(now())
+
+  round Round? @relation(fields: [roundId], references: [id], onDelete: SetNull)
+
+  // YouTube message ID as primary idempotency key
+  @@unique([platformMessageId])
+  @@index([roundId])
+}
+
+// ─── MoveCandidate: Unique legal candidate moves per round ───
+
+model MoveCandidate {
+  id              String   @id @default(uuid())
+  roundId         String
+  viewerId        String
+  canonicalUci    String
+  san             String
+  valid           Boolean  @default(true)
+  submissionCount Int      @default(1)
+  createdAt       DateTime @default(now())
+
+  round Round @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  votes  Vote[]
+
+  // Per-viewer candidate deduplication: one entry per (round, viewer, move)
+  @@unique([roundId, viewerId, canonicalUci])
+  @@index([roundId])
+}
+
+// ─── Vote: One mutable vote per viewer per round ───
+
+model Vote {
+  id          String   @id @default(uuid())
+  roundId     String
+  viewerId    String
+  candidateId String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  round     Round          @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  candidate MoveCandidate  @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  // One vote per viewer per round (vote changes overwrite via upsert)
+  @@unique([roundId, viewerId])
+  @@index([candidateId])
+}
+
+// ─── Score: Battle Royale leaderboard totals ───
+
+model Score {
+  sessionId           String
+  viewerId            String
+  viewerDisplayName   String   @default("")
+  points              Int      @default(0)
+  updatedAt           DateTime @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  // Composite primary key: one score entry per (session, viewer)
+  @@id([sessionId, viewerId])
+}
+
+// ─── GameEvent: Auditable game stream events and reconciliation ───
+
+model GameEvent {
+  id               String    @id @default(uuid())
+  gameId           String
+  eventType        String    // GAME_FULL | GAME_STATE | CHAT_LINE | OPPONENT_GONE | CHALLENGE | GAME_FINISH
+  payloadJson      Json
+  platformEventAt  DateTime?
+  createdAt        DateTime  @default(now())
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([gameId])
+}
