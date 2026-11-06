@@ -278,6 +278,118 @@ describe('ChatEvent deduplication', () => {
   })
 })
 
+describe('YoutubeConnection', () => {
+  it('supports create, read, update and delete', async () => {
+    const user = await prisma.user.create({ data: { displayName: 'S' } })
+    const conn = await prisma.youtubeConnection.create({
+      data: {
+        userId: user.id,
+        channelId: 'UC_channel1',
+        encryptedRefreshToken: 'enc:abc',
+        scopes: ['youtube.readonly'],
+      },
+    })
+    expect(conn.status).toBe('ACTIVE')
+    expect(conn.scopes).toEqual(['youtube.readonly'])
+
+    const found = await prisma.youtubeConnection.findUnique({ where: { id: conn.id } })
+    expect(found?.channelId).toBe('UC_channel1')
+
+    const updated = await prisma.youtubeConnection.update({
+      where: { id: conn.id },
+      data: { status: 'REVOKED' },
+    })
+    expect(updated.status).toBe('REVOKED')
+
+    await prisma.youtubeConnection.delete({ where: { id: conn.id } })
+    expect(await prisma.youtubeConnection.findUnique({ where: { id: conn.id } })).toBeNull()
+  })
+
+  it('enforces unique (userId, channelId)', async () => {
+    const user = await prisma.user.create({ data: { displayName: 'S' } })
+    const data = { userId: user.id, channelId: 'UC_dup', encryptedRefreshToken: 'enc:x' }
+    await prisma.youtubeConnection.create({ data })
+    await expect(prisma.youtubeConnection.create({ data })).rejects.toThrow()
+  })
+})
+
+describe('LichessBotConnection', () => {
+  it('supports create, read, update and delete', async () => {
+    const user = await prisma.user.create({ data: { displayName: 'S' } })
+    const conn = await prisma.lichessBotConnection.create({
+      data: { ownerUserId: user.id, botUsername: 'CrowdChessBot', encryptedTokenRef: 'enc:ref' },
+    })
+    expect(conn.status).toBe('ACTIVE')
+
+    const found = await prisma.lichessBotConnection.findUnique({ where: { id: conn.id } })
+    expect(found?.botUsername).toBe('CrowdChessBot')
+
+    const updated = await prisma.lichessBotConnection.update({
+      where: { id: conn.id },
+      data: { status: 'DISCONNECTED' },
+    })
+    expect(updated.status).toBe('DISCONNECTED')
+
+    await prisma.lichessBotConnection.delete({ where: { id: conn.id } })
+    expect(await prisma.lichessBotConnection.findUnique({ where: { id: conn.id } })).toBeNull()
+  })
+
+  it('enforces unique (ownerUserId, botUsername)', async () => {
+    const user = await prisma.user.create({ data: { displayName: 'S' } })
+    const data = { ownerUserId: user.id, botUsername: 'DupBot', encryptedTokenRef: 'enc:x' }
+    await prisma.lichessBotConnection.create({ data })
+    await expect(prisma.lichessBotConnection.create({ data })).rejects.toThrow()
+  })
+
+  it('is removed when its owner user is deleted', async () => {
+    const user = await prisma.user.create({ data: { displayName: 'S' } })
+    await prisma.lichessBotConnection.create({
+      data: { ownerUserId: user.id, botUsername: 'Bot', encryptedTokenRef: 'enc:x' },
+    })
+    await prisma.user.delete({ where: { id: user.id } })
+    expect(await prisma.lichessBotConnection.count()).toBe(0)
+  })
+})
+
+describe('GameEvent', () => {
+  it('supports create, read, update and delete', async () => {
+    const { gameId } = await createTestRound()
+    const event = await prisma.gameEvent.create({
+      data: {
+        gameId,
+        eventType: 'GAME_STATE',
+        payloadJson: { moves: 'e2e4', wtime: 60000 },
+        platformEventAt: new Date(),
+      },
+    })
+
+    const found = await prisma.gameEvent.findUnique({ where: { id: event.id } })
+    expect(found?.eventType).toBe('GAME_STATE')
+    expect(found?.payloadJson).toEqual({ moves: 'e2e4', wtime: 60000 })
+
+    const updated = await prisma.gameEvent.update({
+      where: { id: event.id },
+      data: { payloadJson: { moves: 'e2e4 e7e5' } },
+    })
+    expect(updated.payloadJson).toEqual({ moves: 'e2e4 e7e5' })
+
+    await prisma.gameEvent.delete({ where: { id: event.id } })
+    expect(await prisma.gameEvent.findUnique({ where: { id: event.id } })).toBeNull()
+  })
+
+  it('lists events for a game and cascades on game delete', async () => {
+    const { gameId } = await createTestRound()
+    for (const eventType of ['GAME_FULL', 'GAME_STATE', 'GAME_FINISH']) {
+      await prisma.gameEvent.create({ data: { gameId, eventType, payloadJson: {} } })
+    }
+    const events = await prisma.gameEvent.findMany({ where: { gameId } })
+    expect(events.map((e) => e.eventType).sort()).toEqual(['GAME_FINISH', 'GAME_FULL', 'GAME_STATE'])
+
+    await prisma.game.delete({ where: { id: gameId } })
+    expect(await prisma.gameEvent.count({ where: { gameId } })).toBe(0)
+  })
+})
+
 // ─── Test helpers ───
 
 async function createTestRound() {

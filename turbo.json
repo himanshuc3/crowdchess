@@ -1,1 +1,1 @@
-{"tasks": {"build": {"dependsOn": ["^build"], "outputs": ["dist/**"]}, "dev": {"cache": false, "persistent": true}, "test": {"outputs": []}, "lint": {"outputs": []}, "db:generate": {"outputs": ["src/generated/**"]}, "db:migrate": {"outputs": ["prisma/migrations/**"]}}}
+{"tasks": {"build": {"dependsOn": ["^build"], "outputs": ["dist/**"]}, "dev": {"cache": false, "persistent": true}, "test": {"outputs": []}, "lint": {"outputs": []}, "db:generate": {"outputs": ["src/generated/**"]}, "db:migrate": {"cache": false, "passThroughEnv": ["DATABASE_URL"]}}}

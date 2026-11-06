@@ -152,3 +152,41 @@ This document tracks all steps taken during implementation, CLI commands execute
 - Prisma's `db:migrate` needs a running PostgreSQL instance — started a temporary Docker container for this task (will be formalized in Task 5's docker-compose)
 - The `@@unique` constraint in Prisma maps to a SQL UNIQUE constraint, which causes `prisma.create` to throw on duplicates — used in tests with `.rejects.toThrow()`
 - Prisma composite primary keys use `@@id([field1, field2])` syntax, and lookups use the compound key name like `sessionId_viewerId`
+
+
+---
+
+## Task 3 (follow-up): Fix `db:migrate`, Clean Install, and Complete Model Tests
+
+Found while setting up the repo on a fresh Windows machine (Node 24.22.2, pnpm 12.16.1, PostgreSQL 16.15).
+
+### Steps Taken
+1. `packages/database/package.json`: `db:migrate` now runs through `dotenv -e ../../.env --`, so Prisma reads `DATABASE_URL` from the root `.env`. Added `dotenv-cli` (^8.0.0) as a devDependency. A `DATABASE_URL` already set in the shell still takes precedence.
+2. `turbo.json`: `db:migrate` now has `"cache": false` and `"passThroughEnv": ["DATABASE_URL"]`. Removed its `outputs`, since migrations are source files and not build output.
+3. `pnpm-workspace.yaml`: replaced the placeholder `allowBuilds` values (`set this to true or false`) with `true` for `esbuild`, `prisma`, `@prisma/client` and `@prisma/engines`.
+4. `packages/database/src/__tests__/database.test.ts`: added 7 tests for the three models that had none:
+   - `YoutubeConnection`: CRUD and unique `[userId, channelId]`
+   - `LichessBotConnection`: CRUD, unique `[ownerUserId, botUsername]`, and cascade on user delete
+   - `GameEvent`: CRUD with JSON payload, listing by game, and cascade on game delete
+
+### CLI Commands Executed
+- `pnpm install`: added `dotenv-cli` to the lockfile
+- `pnpm install --frozen-lockfile` in a fresh clone: confirmed it now exits 0
+- `pnpm db:migrate` with only the root `.env`: reported "Already in sync"
+- `DATABASE_URL=.../crowdchess_fresh pnpm db:migrate`: created a new database and applied `20261104050838_init`
+- `pnpm db:migrate` again: ran the migration instead of replaying a cached result
+- `prisma migrate diff --from-url $DATABASE_URL --to-schema-datamodel prisma/schema.prisma --exit-code`: reported "No difference detected"
+- `pnpm build`: 10/10 tasks succeeded
+- `pnpm test`: 10/10 tasks succeeded; contracts 40 passed, database 20 passed (up from 13)
+
+### What Was Verified
+- A fresh clone installs with exit code 0, and Prisma's postinstall scripts run
+- `pnpm db:migrate` works with `DATABASE_URL` from the root `.env` or from the shell, on both a fresh and an existing database
+- `db:migrate` is never served from the Turbo cache
+- All 11 Prisma models now have test coverage
+
+### Learnings
+- Before this fix, `pnpm db:migrate` always failed with `P1012 Environment variable not found: DATABASE_URL`. Turbo 2 runs tasks in strict env mode, so shell variables are dropped unless listed in `env` or `passThroughEnv`. Prisma also only loads a `.env` next to the schema or package, not the monorepo root.
+- With `outputs` set and caching on, Turbo could replay a cached `db:migrate` result and skip applying migrations to a new database.
+- `ERR_PNPM_IGNORED_BUILDS` was caused by the placeholder text in `allowBuilds`. pnpm 12 reads `allowBuilds`, and `onlyBuiltDependencies` alone does not approve builds.
+- `db:migrate` still passes `--name init`, so a future schema change made through this script would also get a migration named `init`. Run `prisma migrate dev --name <name>` directly for new migrations.
