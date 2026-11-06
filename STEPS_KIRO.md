@@ -190,3 +190,45 @@ Found while setting up the repo on a fresh Windows machine (Node 24.22.2, pnpm 1
 - With `outputs` set and caching on, Turbo could replay a cached `db:migrate` result and skip applying migrations to a new database.
 - `ERR_PNPM_IGNORED_BUILDS` was caused by the placeholder text in `allowBuilds`. pnpm 12 reads `allowBuilds`, and `onlyBuiltDependencies` alone does not approve builds.
 - `db:migrate` still passes `--name init`, so a future schema change made through this script would also get a migration named `init`. Run `prisma migrate dev --name <name>` directly for new migrations.
+
+
+---
+
+## Task 4: Chess Rules Package
+
+### Steps Taken
+1. Added `chess.js` (^1.4.0) as a dependency, and `vitest` (^3.0.0), `fast-check` (^4.0.0) and `tsx` (^4.19.0) as devDependencies, to `packages/chess/package.json`. Set `test` to `vitest run` and added a `demo` script.
+2. Created `packages/chess/src/position.ts`: `loadPosition(fen)` and `InvalidFenError`.
+3. Created `packages/chess/src/moves.ts`:
+   - `parseMove(input, fen): ParsedMove` throws `MoveParseError` with a `reason`
+   - `validateMove(input, fen): ValidationResult` returns `{ valid: true, move }` or `{ valid: false, reason, message }`
+   - `ParsedMove` holds canonical lowercase `uci`, chess.js `san`, `from`, `to`, optional `promotion`, the detected `notation` (`san` | `uci`) and the original `input`
+   - Rejection reasons: `EMPTY`, `MALFORMED`, `INVALID_FEN`, `GAME_OVER`, `NO_PIECE`, `WRONG_SIDE`, `AMBIGUOUS`, `PROMOTION_REQUIRED`, `ILLEGAL`
+4. Created `packages/chess/src/state.ts`: `getLegalMoves` (UCI), `whoseTurn` (`'white' | 'black'`, matching `BotColorSchema`), `isCheck`, `isCheckmate`, `isStalemate`, `isGameOver`, and `applyMove(fen, uci)` returning the next FEN.
+5. `packages/chess/src/index.ts` re-exports all of the above, plus `Chess`, `validateFen` and the main chess.js types.
+6. Created tests in `packages/chess/src/__tests__/`:
+   - `moves.test.ts` (26 tests): SAN (pieces, pawns, captures, check/mate markers, castling, promotion and underpromotion, ambiguity, over-specified origins, en passant, bishop vs b-pawn), UCI (case, castling, promotion), and edge cases (empty square, wrong side, non-move text, invalid FEN, game over)
+   - `state.test.ts` (12 tests): legal move generation, turn, check, checkmate, stalemate, `applyMove`
+   - `properties.test.ts` (4 fast-check properties): SAN→UCI→SAN round-trip for every legal move in random positions; every `getLegalMoves` entry validates as itself; arbitrary strings never throw and anything accepted is legal; square-like noise is only accepted when legal
+7. Created `packages/chess/scripts/demo.ts` for the Task 4 demo.
+
+### CLI Commands Executed
+- `pnpm install`: added chess.js 1.4.0, fast-check 4.10.2 and pure-rand 8.4.2 to the lockfile
+- `pnpm --filter @crowdchess/chess build`: TypeScript compiles in strict mode
+- `pnpm --filter @crowdchess/chess test`: 42 tests passed
+- `pnpm --filter @crowdchess/chess demo`: ran the demo
+- `pnpm build`: 10/10 tasks succeeded
+- `pnpm test`: 10/10 tasks succeeded; contracts 40, database 20, chess 42 tests passed
+- `pnpm install --frozen-lockfile`: lockfile is consistent
+
+### What Was Verified
+- Demo: in the position after 1.e4, `Nf6` and `g8f6` both resolve to `g8f6` / `Nf6`; `validateMove` accepts `Nf6` and rejects `e2e4` (`NO_PIECE`), `Nf5` (`ILLEGAL`) and `hello` (`MALFORMED`); `getLegalMoves` lists the 20 legal replies; the Fool's Mate position reports `isCheckmate: true` with 0 legal moves
+- SAN→UCI→SAN round-trips for every legal move in 100 random positions of up to 60 plies
+
+### Learnings
+- Matching SAN against chess.js's verbose move list (piece, destination, optional origin file/rank, promotion) handles over-specified origins, a missing `x` and ambiguity in one place. Comparing SAN strings would not.
+- A pawn SAN move without an origin file must be treated as a push: `e4` must not match `dxe4`.
+- `WRONG_SIDE` for SAN is found by re-checking the move with the side to move flipped and the en passant square cleared. The re-check must not flip again, or an illegal move recurses forever.
+- Promotions are rejected without a piece (`PROMOTION_REQUIRED`) rather than auto-queened, so the selected move never depends on a guess.
+- `isGameOver` cannot detect threefold repetition from a FEN alone, since that needs move history. Lichess stays authoritative for results.
+- In PowerShell, pnpm's stderr shows up as `NativeCommandError` text even when the command succeeds; check the exit code instead.
