@@ -33,8 +33,14 @@ pnpm install
 ### Development
 
 ```bash
+# Create your local env file (DATABASE_URL and REDIS_URL are required)
+cp .env.example .env
+
 # Start PostgreSQL and Redis
 docker compose up -d
+
+# Check that the database and Redis are reachable
+pnpm --filter @crowdchess/api infra:check
 
 # Run database migrations
 pnpm db:migrate
@@ -45,6 +51,8 @@ pnpm dev
 
 - Frontend (web): http://localhost:3000
 - Backend (API): http://localhost:3001
+
+**Without Docker:** any PostgreSQL 16 on `localhost:5432` and Redis 7 on `localhost:6379` will do, as long as they match `DATABASE_URL` and `REDIS_URL` in `.env`. On Windows, where Redis has no official build, Microsoft's Redis-compatible [Garnet](https://github.com/microsoft/garnet) works for local development.
 
 ### Build
 

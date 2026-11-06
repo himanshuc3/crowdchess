@@ -1,0 +1,9 @@
+# Convenience entry point so `docker compose up -d` works from the repo root.
+# The services are defined in infra/docker/docker-compose.yml.
+# Requires Docker Compose v2.20 or later (for `include`).
+#
+# No Docker? Any PostgreSQL 16 on localhost:5432 and Redis 7 (or a Redis-compatible server)
+# on localhost:6379 work too, as long as they match DATABASE_URL and REDIS_URL in .env.
+
+include:
+  - infra/docker/docker-compose.yml

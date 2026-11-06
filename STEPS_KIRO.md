@@ -232,3 +232,51 @@ Found while setting up the repo on a fresh Windows machine (Node 24.22.2, pnpm 1
 - Promotions are rejected without a piece (`PROMOTION_REQUIRED`) rather than auto-queened, so the selected move never depends on a guess.
 - `isGameOver` cannot detect threefold repetition from a FEN alone, since that needs move history. Lichess stays authoritative for results.
 - In PowerShell, pnpm's stderr shows up as `NativeCommandError` text even when the command succeeds; check the exit code instead.
+
+
+---
+
+## Task 5: Docker Infrastructure
+
+### Steps Taken
+1. Created `infra/docker/docker-compose.yml` with `postgres` (postgres:16-alpine) and `redis` (redis:7-alpine, AOF enabled). Both have health checks (`pg_isready`, `redis-cli ping`), named volumes and a shared network. Ports are bound to `127.0.0.1` only. Credentials match `.env.example`.
+2. Created a root `docker-compose.yml` that `include`s the infra file, so `docker compose up -d` works from the repo root. This needs Compose v2.20 or later. Removed `infra/docker/.gitkeep`.
+3. Implemented `packages/config` (`src/env.ts`):
+   - `EnvSchema` (Zod): `DATABASE_URL` must be `postgresql://`/`postgres://`; `REDIS_URL` must be `redis://`/`rediss://`; `PORT` is coerced and defaults to 3001; `NODE_ENV` defaults to `development`. Lichess, YouTube, `ENCRYPTION_KEY` and `JWT_SECRET` stay optional until Tasks 8, 11 and 24.
+   - Empty strings count as unset, since `.env` files often contain `KEY=`.
+   - `loadConfig(env = process.env)` returns typed config or throws `ConfigError`, which lists every problem as `{ variable, message }`. Messages are built so they never echo values; Zod's default enum message includes the received value.
+4. Added to `apps/api`:
+   - `src/infra/redis.ts`: `createRedis(url, options)` using ioredis 5 with bounded retries (`maxRetriesPerRequest: 3`, 5s connect timeout), so an outage fails fast instead of queueing forever
+   - `src/infra/health.ts`: `checkPostgres` (`SELECT 1`) and `checkRedis` (`PING`), returning `{ ok, latencyMs, error? }` with no connection details in the error, ready for a `/health` route in Task 9
+   - `scripts/infra-check.ts` with an `infra:check` script (loads the root `.env` via dotenv-cli) for the demo
+   - Dependencies: `@crowdchess/config`, `@crowdchess/database`, `ioredis`; devDependencies: `vitest`, `dotenv-cli`
+5. Tests:
+   - `packages/config/src/__tests__/env.test.ts` (10 tests): defaults, `.env.example` values, URL protocols, coercion, missing and empty required variables, invalid `PORT`/`NODE_ENV`, and no values in errors
+   - `apps/api/src/__tests__/infra.test.ts` (8 integration tests): PostgreSQL query and health, Redis PING, SET/GET with TTL, SET NX deduplication, pub/sub, health, and fast failure when Redis is unreachable
+6. README: added `cp .env.example .env`, the `infra:check` step, and a note on running without Docker.
+
+### Local Setup Without Docker
+This machine runs Windows 11 Home. Docker Desktop needs WSL 2 there, since Hyper-V isn't available on Home, and installing WSL was declined. Task 5 was verified against equivalent services running natively instead:
+- PostgreSQL 16.15 (portable binaries from `@embedded-postgres/windows-x64`)
+- Garnet 2.2.4, Microsoft's Redis-protocol-compatible server, on a portable .NET 10 runtime
+Both run outside the repo, on `127.0.0.1` only. **`docker compose up -d` itself has not been run yet.** The compose files were checked against the official Compose specification JSON schema instead. Whoever has Docker should run `docker compose up -d` and `docker compose ps` once to confirm both services report healthy.
+
+### CLI Commands Executed
+- `pnpm install`: added ioredis 5.11.1 and the workspace links
+- `pnpm build`: 10/10 tasks succeeded
+- `pnpm test`: 10/10 tasks succeeded; contracts 40, database 20, chess 42, config 10, api 8 (120 total)
+- `pnpm --filter @crowdchess/api infra:check`: demo succeeded (see below)
+- `DATABASE_URL=mysql://... pnpm --filter @crowdchess/api infra:check`: exited 1 with `DATABASE_URL must be a URL starting with postgresql:// or postgres://`, and the password was not printed
+- Compose files validated with ajv against `compose-spec.json` (draft 2020-12): both `VALID`
+
+### What Was Verified
+- Demo: config loaded; PostgreSQL 16.15 answered `SELECT version()`; a user record was created, read back (match) and deleted; Redis `PING` → `PONG`, `SET` → `OK`, `GET` → `hello`
+- Env validation rejects missing, empty and malformed required variables, reporting all at once without values
+- Backend connects to PostgreSQL and executes a query; connects to Redis and does SET/GET, NX and pub/sub
+- Not verified: `docker compose up -d` with real containers and health checks (needs Docker)
+
+### Learnings
+- Docker Desktop on Windows Home needs WSL 2, because the Hyper-V backend is only on Pro/Enterprise. GitHub Actions runners have Docker, so a CI job can verify the compose files without anything installed locally.
+- Integration tests in different packages run in parallel under Turbo, and the database tests wipe every table before each test. Other packages' integration tests should not depend on rows persisting; the infra test only runs read queries, and the create/read/delete check is in the demo script.
+- Redis keys in tests use a unique per-run prefix and are deleted afterwards, so a shared local Redis isn't polluted.
+- Garnet is Redis-compatible for the commands used here (PING, SET with EX/NX, GET, TTL, KEYS, DEL, PUBLISH/SUBSCRIBE). Later tasks that rely on less common commands (e.g. Lua scripts) should also be tested against real Redis 7.

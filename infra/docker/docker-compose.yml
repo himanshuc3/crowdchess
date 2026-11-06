@@ -1,0 +1,54 @@
+# Local development services: PostgreSQL 16 and Redis 7.
+# Start:  docker compose up -d        (from the repo root, via ../../docker-compose.yml)
+# Status: docker compose ps           (both should show "healthy")
+# Stop:   docker compose down         (add -v to also delete the data volumes)
+#
+# Ports are bound to 127.0.0.1 only, so the services are not reachable from other machines.
+# Credentials match DATABASE_URL and REDIS_URL in .env.example.
+
+name: crowdchess
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crowdchess
+      POSTGRES_PASSWORD: crowdchess
+      POSTGRES_DB: crowdchess
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U crowdchess -d crowdchess']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - crowdchess
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - crowdchess
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  crowdchess:
+    name: crowdchess
