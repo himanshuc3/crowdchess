@@ -14,7 +14,9 @@ const positionArb = fc.array(fc.nat(), { maxLength: 60 }).map((choices) => {
   return chess.fen()
 })
 
-describe('properties', () => {
+// Each property checks every legal move across 100 random positions, which takes several seconds
+// and more when Turbo runs other packages' tests in parallel. The 5s default is too tight.
+describe('properties', { timeout: 30_000 }, () => {
   it('SAN -> UCI -> SAN round-trips for every legal move', () => {
     fc.assert(
       fc.property(positionArb, (fen) => {

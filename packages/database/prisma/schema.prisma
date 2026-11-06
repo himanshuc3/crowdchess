@@ -65,6 +65,7 @@ model Session {
   youtubeBroadcastId  String?
   mode                String    // DEMOCRACY | BATTLE_ROYALE | CHAOS
   status              String    @default("DRAFT") // SessionStatus enum
+  pausedFrom          String?   // Status before PAUSED, so RESUME knows where to return; null otherwise
   settingsJson        Json?
   createdAt           DateTime  @default(now())
   endedAt             DateTime?
@@ -72,6 +73,23 @@ model Session {
   streamerUser User    @relation(fields: [streamerUserId], references: [id], onDelete: Cascade)
   games                Game[]
   scores               Score[]
+  transitions          SessionTransition[]
+}
+
+// ─── SessionTransition: Audit log of session state machine transitions ───
+
+model SessionTransition {
+  id          Int      @id @default(autoincrement()) // Monotonic, so history orders correctly within a millisecond
+  sessionId   String
+  fromStatus  String
+  toStatus    String
+  event       String   // SessionEventType from @crowdchess/game-core
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, id])
 }
 
 // ─── Game: External game reference and synchronized state ───

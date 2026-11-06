@@ -327,10 +327,29 @@ importers:
         version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)
 
   packages/game-core:
+    dependencies:
+      '@crowdchess/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@crowdchess/database':
+        specifier: workspace:*
+        version: link:../database
     devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+      dotenv-cli:
+        specifier: ^8.0.0
+        version: 8.0.0
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.15
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)
 
   packages/modes:
     devDependencies:

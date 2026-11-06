@@ -8,6 +8,7 @@ export type {
   YoutubeConnection,
   LichessBotConnection,
   Session,
+  SessionTransition,
   Game,
   Round,
   ChatEvent,

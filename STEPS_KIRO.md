@@ -280,3 +280,55 @@ Both run outside the repo, on `127.0.0.1` only. **`docker compose up -d` itself 
 - Integration tests in different packages run in parallel under Turbo, and the database tests wipe every table before each test. Other packages' integration tests should not depend on rows persisting; the infra test only runs read queries, and the create/read/delete check is in the demo script.
 - Redis keys in tests use a unique per-run prefix and are deleted afterwards, so a shared local Redis isn't polluted.
 - Garnet is Redis-compatible for the commands used here (PING, SET with EX/NX, GET, TTL, KEYS, DEL, PUBLISH/SUBSCRIBE). Later tasks that rely on less common commands (e.g. Lua scripts) should also be tested against real Redis 7.
+
+
+---
+
+## Task 6: Session State Machine
+
+### Steps Taken
+1. Created `packages/game-core/src/session/machine.ts`, a pure state machine with no I/O:
+   - `SessionEvent` discriminated union: `START`, `YOUTUBE_CONNECTED`, `CHALLENGE_ACCEPTED`, `GAME_STARTED`, `STREAMER_MOVED`, `MOVE_SELECTED`, `MOVE_CONFIRMED`, `MOVE_REJECTED`, `GAME_ENDED`, `PAUSE`, `RESUME { turn? }`, `ABORT`, `FAIL`
+   - `SessionState = { status, pausedFrom }`, where `pausedFrom` records where a paused session returns to
+   - `transition(state, event)` returns the next state or throws `InvalidTransitionError`; `canTransition` is the guard; `checkTransition` returns `{ ok, next | reason }` without throwing
+   - Groups: `SETUP_STATUSES`, `IN_GAME_STATUSES`, `TERMINAL_STATUSES`
+2. Prisma schema: added `Session.pausedFrom` and a new `SessionTransition` model (`id` autoincrement, `sessionId`, `fromStatus`, `toStatus`, `event`, `reason`, `createdAt`; cascade delete; index on `[sessionId, id]`). Migration: `20261106171250_session_transitions`.
+3. Created `packages/game-core/src/session/service.ts` with `SessionStateService`:
+   - `create()` makes a DRAFT session; `getState()`, `history()` (oldest first)
+   - `apply(sessionId, event, reason?)` validates with the machine, then in one database transaction does a guarded `updateMany` (`WHERE id AND status AND pausedFrom` match what was read) and inserts the `SessionTransition` row. If the guard matches 0 rows it throws `ConcurrentTransitionError`. Terminal states set `endedAt`.
+   - `onTransition(listener)` returns an unsubscribe function. Listeners run only after commit, and a throwing listener can't undo a committed transition.
+   - `toSessionUpdatedEvent(record)` produces the contracts `session.updated` WebSocket event
+4. Tests (`packages/game-core/src/__tests__/`):
+   - `machine.test.ts` (143 tests): every non-paused status × every event checked against an explicit table of allowed transitions; full happy path including `MOVE_REJECTED`; pause/resume; terminal states; error contents; the `pausedFrom` invariant
+   - `service.test.ts` (10 integration tests): persisted history with reasons and timestamps; invalid transition writes and emits nothing; `pausedFrom` round-trip; `endedAt`; not-found; cascade; listener order, unsubscribe and fault isolation; contracts schema check; a real race (exactly one winner); the stale-read guard (forced with a proxied Prisma client)
+   - Integration tests use their own PostgreSQL schema, `game_core_test`. `vitest.global-setup.ts` drops it and runs `prisma migrate deploy` through Node, so no shell or pnpm is needed and it works on any OS.
+5. `scripts/demo.ts` (`pnpm --filter @crowdchess/game-core demo`) for the Task 6 demo.
+6. Exported the `SessionTransition` type from `@crowdchess/database`.
+7. Fixed a Task 4 test issue: the chess property tests now have a 30s timeout (see Learnings).
+
+### Deviations From the Plan's Diagram (intentional)
+- **`GAME_ENDED` is accepted from `GAME_READY`, every in-game state, and `PAUSED` with a game in progress**, not only from `STREAMER_TURN`. Lichess is authoritative, and a game can end by resignation, timeout, draw or abort on either side's turn or while CrowdChess is paused.
+- **`RESUME` of an in-progress game requires `turn`** (`STREAMER` or `AUDIENCE`) from the game stream instead of always going to `STREAMER_TURN`. The design doc (6.2) says the game stream decides whose turn it is. Resuming a session paused during setup returns to the setup step it was paused at.
+- **Added `MOVE_REJECTED`** (`MOVE_SUBMITTING → AUDIENCE_TURN`) for design doc section 14: "Lichess returns illegal move: … reopen a safe round only if it is still the bot's turn."
+- `DRAFT` cannot be paused, since nothing has started. Any non-terminal state can `ABORT` or `FAIL`.
+
+### CLI Commands Executed
+- `prisma migrate dev --name session_transitions` hung non-interactively after creating its shadow database, so it was stopped and replaced with:
+  - `prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --script > prisma/migrations/20261106171250_session_transitions/migration.sql`
+  - `prisma migrate deploy` applied it
+  - `prisma migrate diff ... --exit-code` reported "No difference detected"
+  - `prisma generate`
+- `pnpm build`: 10/10 tasks succeeded
+- `pnpm exec turbo test --force`, twice: 10/10 tasks succeeded both times; config 10, contracts 40, api 8, database 20, game-core 153, chess 42 (273 total)
+- `pnpm --filter @crowdchess/game-core demo`: succeeded
+
+### What Was Verified
+- Demo: a DEMOCRACY session was created in DRAFT and walked through START → YOUTUBE_CONNECTED → CHALLENGE_ACCEPTED → GAME_STARTED to STREAMER_TURN, with a `session.updated` event per step. The 4 `SessionTransition` rows were printed with timestamps and reasons, and the session row shows STREAMER_TURN. `MOVE_CONFIRMED` in STREAMER_TURN was rejected ("only valid in MOVE_SUBMITTING") and the status stayed STREAMER_TURN. The demo data was removed afterwards.
+- All valid transitions, all rejected transitions and terminal states are unit tested; persistence is integration tested against PostgreSQL
+
+### Learnings
+- `prisma migrate dev` can block on a prompt when stdin is not a terminal, even with `--name`. For new migrations in scripted or agent environments, use `migrate diff --script` into a new migration folder, then `migrate deploy`.
+- Guarding the update on the status that was read (`updateMany … WHERE status = ?` and checking `count === 1`) is a simple optimistic lock: two workers can't both apply a transition from the same state.
+- An autoincrement `id` on the audit table gives reliable ordering. Several transitions can share a millisecond `createdAt`.
+- Integration tests in different packages share one PostgreSQL. Giving each package its own schema (`?schema=...` in the URL, reset in a Vitest global setup) stops one package's cleanup from deleting another's data mid-test.
+- The Task 4 SAN→UCI→SAN property test took about 4s alone but 10–12s when Turbo ran all packages in parallel, hitting Vitest's 5s default timeout. It was a timeout, not a wrong result. Property tests that exhaustively check positions need an explicit timeout.
